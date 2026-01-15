@@ -1,0 +1,6 @@
+__pycache__/
+.DS_Store
+embeddings_cache/
+results/
+archived_results/
+raw/

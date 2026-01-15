@@ -1,0 +1,22 @@
+{
+	"doc_id": "11111",
+	"title": "Title",
+	"abstract": "ABSTRACT TEXT",
+	"full_text": [
+		{
+			"section_name": "Introduction",
+			"paragraphs": ["Paragraph one", "Paragraph two", "Paragraph with answer to the query"]
+		}
+	],
+	"queries": [
+		{
+			"query_id": 12345,
+			"query_text": "Some query about the document",
+			"matches": [
+				{
+					"text": "answer to the query"
+				}
+			]
+		}
+	]
+}
