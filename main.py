@@ -56,9 +56,9 @@ MODELS_TO_TEST = [
 def main():
     # Clear output directory
     output_dir = Path(__file__).parent / "results"
-    # if output_dir.exists():
-    #     shutil.rmtree(output_dir)
-    # output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
   
     # Load dataset
     dataset_path = Path(__file__).parent / "datasets" / DATASET / "data.json"
