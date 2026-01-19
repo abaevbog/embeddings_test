@@ -9,7 +9,7 @@ def test_chunker():
         dataset = json.load(f)
     
     # Chunk documents
-    chunker = BalancedSectionChunker(chunk_size=512, overlap=50)
+    chunker = FixedTokensChunker(chunk_size=512, overlap=50, model_name="BAAI/bge-large-en-v1.5")
     chunker.prepare_documents(dataset)
     
     # Prepare output

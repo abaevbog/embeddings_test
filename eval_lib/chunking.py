@@ -1,6 +1,6 @@
 from typing import List, Dict, Any
 import nltk
-
+from transformers import AutoTokenizer
 
 class Chunker:
     def __init__(self):
@@ -41,6 +41,10 @@ class Chunker:
                         # Chunk this section independently
                         section_chunks = self.chunk_text(section_text)
                         all_chunks.extend(section_chunks)
+            
+            # Prepend title to each chunk after chunking
+            if doc_title:
+                all_chunks = [f"Title: {doc_title}\n\n{chunk}" for chunk in all_chunks]
             
             docs[doc_id] = {
                 'title': doc_title,
@@ -92,33 +96,50 @@ class FixedCharsChunker(Chunker):
 
 
 class FixedTokensChunker(Chunker):
-    def __init__(self, chunk_size: int = 250, overlap: int = 50):
+    def __init__(self, chunk_size: int = 250, overlap: int = 50, model_name: str = None):
         super().__init__()
         self.chunk_size = chunk_size
         self.overlap = overlap
+        self.model_name = model_name
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
 
     def chunk_text(self, text: str) -> List[str]:
         import re
 
         if not text:
             return []
-
-        word_pattern = re.compile(r'\S+')
-        word_matches = list(word_pattern.finditer(text))
-        if not word_matches:
+        
+        # Tokenize with character offsets to preserve original text
+        encoded = self.tokenizer(
+            text,
+            add_special_tokens=False,
+            return_offsets_mapping=True,
+            truncation=False
+        )
+        
+        offset_mapping = encoded['offset_mapping']
+        
+        if not offset_mapping:
             return []
-
+        
         chunks = []
         step = max(1, self.chunk_size - self.overlap)
-        for i in range(0, len(word_matches), step):
-            chunk_word_matches = word_matches[i:i + self.chunk_size]
-            if not chunk_word_matches:
+        
+        for i in range(0, len(offset_mapping), step):
+            # Get token offsets for this chunk
+            chunk_offsets = offset_mapping[i:i + self.chunk_size]
+            if not chunk_offsets:
                 break
-            start = chunk_word_matches[0].start()
-            end = chunk_word_matches[-1].end()
-            chunk_text = text[start:end]
-            chunks.append(chunk_text)
-
+            
+            # Extract text using character positions from original text
+            start_char = chunk_offsets[0][0]
+            end_char = chunk_offsets[-1][1]
+            chunk_text = text[start_char:end_char]
+            
+            if chunk_text.strip():
+                chunks.append(chunk_text)
+        
         return chunks
 
 

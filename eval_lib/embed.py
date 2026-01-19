@@ -7,7 +7,13 @@ import time
 import psutil
 import os
 import pickle
-from config import SEARCH_ALL_CHUNKS, DELAY_ON_EMBEDDING_CACHE_CLEAR
+import json
+import boto3
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from config import SEARCH_ALL_CHUNKS, SAGEMAKER_PARALLEL_WORKERS
+
+runtime = boto3.client('sagemaker-runtime')
+
 
 class SearchResult:
     """Result of a search query."""
@@ -20,9 +26,6 @@ class SearchResult:
 
 
 class Embedder:
-    def embed(self, texts: List[str]) -> np.ndarray:
-        raise NotImplementedError()
-    
     def embed_corpus(self, docs: Dict[str, Dict[str, any]]):
         """Embed all chunks across documents and build internal index."""
         raise NotImplementedError()
@@ -44,37 +47,55 @@ class Embedder:
 class SentenceTransformerEmbedder(Embedder):
     def __init__(self, model_name: str, query_prefix: str = "", doc_prefix: str = ""):
         self.model_name = model_name
-        device = "cpu"
-        if torch.backends.mps.is_available():
-            device = 'mps'
-        elif torch.cuda.is_available():
-            device = 'cuda'
-        self.model = SentenceTransformer(model_name, device=device, trust_remote_code=True)
-        
-        # Use provided prefixes
         self.query_prefix = query_prefix
         self.doc_prefix = doc_prefix
-        
         self.embeddings = None
         self.chunk_to_doc_map = None
-
-    def embed(self, texts: List[str]) -> np.ndarray:
-        if not texts:
-            return np.array([])
-        if self.model_name == "Snowflake/snowflake-arctic-embed-l-v2.0":
-            # added prompt_name="query" per docs
-            embeddings = self.model.encode(texts, prompt_name="query", normalize_embeddings=True)
+        
+        # Only load local model if not using SageMaker
+        if not SAGEMAKER_PARALLEL_WORKERS:
+            device = "cpu"
+            if torch.backends.mps.is_available():
+                device = 'mps'
+            elif torch.cuda.is_available():
+                device = 'cuda'
+            self.model = SentenceTransformer(model_name, device=device, trust_remote_code=True)
         else:
-            embeddings = self.model.encode(texts, normalize_embeddings=True)
-        return embeddings
+            self.model = None
     
     def embed_with_prefix(self, texts: List[str], prefix: str) -> np.ndarray:
         """Embed texts with a specific prefix."""
         if not texts:
             return np.array([])
         prefixed = [f"{prefix}{t}" for t in texts]
-        embeddings = self.model.encode(prefixed, normalize_embeddings=True)
-        return embeddings
+        
+        if SAGEMAKER_PARALLEL_WORKERS:
+            # TEI has a batch size limit of 32, so batch requests
+            MAX_BATCH_SIZE = 32
+            all_embeddings = []
+            
+            for i in range(0, len(prefixed), MAX_BATCH_SIZE):
+                batch = prefixed[i:i + MAX_BATCH_SIZE]
+                response = runtime.invoke_endpoint(
+                    EndpointName=self.model_name.replace('/', '-').replace('.', '-') + '-endpoint',
+                    ContentType='application/json',
+                    Body=json.dumps({"inputs": batch})
+                )
+                result = json.loads(response['Body'].read().decode())
+                batch_embeddings = np.array(result, dtype=np.float32)
+                all_embeddings.append(batch_embeddings)
+            
+            # Combine all batches
+            embeddings = np.vstack(all_embeddings)
+            
+            # Defensive check for None values
+            if embeddings.size == 0 or np.any(embeddings == None):
+                raise ValueError(f"Invalid embeddings received from endpoint. Shape: {embeddings.shape}, contains None: {np.any(embeddings == None)}")
+            
+            return embeddings
+        else:
+            embeddings = self.model.encode(prefixed, normalize_embeddings=True)
+            return embeddings
     
     def embed_query(self, query_text: str) -> np.ndarray:
         """Embed a single query with the appropriate query prefix."""
@@ -91,43 +112,47 @@ class SentenceTransformerEmbedder(Embedder):
         
         total_docs = len(docs)
         doc_counter = 0
-
-        for doc_id, doc_data in docs.items():
-            doc_counter += 1
+        
+        # Convert dict to list for batching
+        doc_items = list(docs.items())
+        BATCH_SIZE = 10
+        
+        # Process documents in batches of 10 in parallel
+        for batch_start in range(0, len(doc_items), BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, len(doc_items))
+            batch = doc_items[batch_start:batch_end]
             
-            title = doc_data.get('title', '')
-            chunks = doc_data.get('chunks', [])
-            if not chunks:
-                print(f" --- {doc_counter}/{total_docs} docs indexed (0 chunks)", end='\r')
-                continue
+            print(f"\n[BATCH] Processing documents {batch_start+1}-{batch_end} of {total_docs}")
             
-            # Prepare chunks with title prefix
-            chunks_with_title = [f"Title: {title}\n\n{chunk}" if title else chunk for chunk in chunks]
+            def process_document(doc_id, doc_data):
+                """Process a single document's chunks."""
+                title = doc_data.get('title', '')
+                chunks = doc_data.get('chunks', [])
+                if not chunks:
+                    return doc_id, None, []
+                
+                # Embed this document's chunks (title already included during chunking)
+                doc_embeddings = self.embed_with_prefix(chunks, self.doc_prefix)
+                return doc_id, doc_embeddings, chunks
             
-            # Embed this document's chunks
-            doc_embeddings = self.embed_with_prefix(chunks_with_title, self.doc_prefix)
-            all_embeddings.append(doc_embeddings)
-            
-            # Track metadata
-            for chunk_idx in range(len(chunks)):
-                chunks_count += 1
-                chunk_to_doc_map.append((doc_id, chunk_idx))
-            
-            print(f" --- {doc_counter}/{total_docs} docs indexed ({chunks_count} chunks)", end='\n')
-            
-            # Check memory pressure - only cleanup if available memory is low
-            memory = psutil.virtual_memory()
-            available_gb = memory.available / (1024**3)
-            memory_percent = memory.percent
-            
-            # If less than 2GB available or >85% used, try to free memory
-            if DELAY_ON_EMBEDDING_CACHE_CLEAR:
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                elif torch.backends.mps.is_available():
-                    torch.mps.empty_cache()
-                time.sleep(DELAY_ON_EMBEDDING_CACHE_CLEAR)  # Pause to let OS reclaim memory
+            # Process batch in parallel
+            with ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+                futures = [executor.submit(process_document, doc_id, doc_data) for doc_id, doc_data in batch]
+                
+                # Collect results in order
+                for future in futures:
+                    doc_id, doc_embeddings, chunks = future.result()
+                    doc_counter += 1
+                    
+                    if doc_embeddings is not None:
+                        all_embeddings.append(doc_embeddings)
+                        
+                        # Track metadata
+                        for chunk_idx in range(len(chunks)):
+                            chunks_count += 1
+                            chunk_to_doc_map.append((doc_id, chunk_idx))
+                    
+                    print(f" --- {doc_counter}/{total_docs} docs indexed ({chunks_count} chunks)", end='\n')
     
         
         if all_embeddings:

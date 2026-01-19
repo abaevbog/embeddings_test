@@ -50,7 +50,11 @@ class ModelEval:
         
         # Create and prepare chunker
         print("  Preparing documents (chunking)...")
-        self.chunker = FixedTokensChunker(chunk_size=self.chunk_size, overlap=self.chunk_overlap)
+        self.chunker = FixedTokensChunker(
+            chunk_size=self.chunk_size, 
+            overlap=self.chunk_overlap,
+            model_name=self.model_name  # Pass model name for correct tokenization
+        )
         self.chunker.prepare_documents(dataset)
         
         # Create embedder (loads the model)

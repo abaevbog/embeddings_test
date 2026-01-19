@@ -16,41 +16,42 @@ except LookupError:
     nltk.download('punkt')
 
 MODELS_TO_TEST = [
-    ModelEval(
-        model_name="sentence-transformers/all-MiniLM-L6-v2", # Tiny model. Baseline. Ok on small corpus, only English
-        reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
-    ),
+    # ModelEval(
+    #     model_name="sentence-transformers/all-MiniLM-L6-v2", # Tiny model. Baseline. Ok on small corpus, only English
+    #     reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+    # ),
     # Only model_name is required. This is just a full config example.
-    ModelEval(
-        model_name="BAAI/bge-large-en-v1.5", # Larger model, only English
-        query_prefix="Represent this sentence for searching relevant passages: ", # Query prefix per for embeddings per model docs
-        reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1", # Optional reranker to apply after fetching embeddings
-        #reranker_retrieval_k=30, # Optional number of top passages to rerank
-        #chunk_size=512, # Size of chunks documents are split into for embedding (default: 512)
-        #chunk_overlap=50, # By how many tokens chunks overlap (default: 50)
-    ),
-    ModelEval(
-        model_name="nomic-ai/nomic-embed-text-v1", # Same as used by ZotSeek
-        doc_prefix="search_document: ",
-        query_prefix="search_query: ",
-        reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
-    ),
-    ModelEval(
-        model_name="intfloat/multilingual-e5-large-instruct", # Good but slow
-        query_prefix="Instruct: Given a query, retrieve relevant passages from the document.\nQuery: ",
-        reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
-    ),
+    # ModelEval(
+    #     model_name="BAAI/bge-large-en-v1.5", # Larger model, only English
+    #     query_prefix="Represent this sentence for searching relevant passages: ", # Query prefix per for embeddings per model docs
+    #     #reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1", # Optional reranker to apply after fetching embeddings
+    #     #reranker_retrieval_k=30, # Optional number of top passages to rerank
+    #     chunk_size=450, # Reduced from 512 to account for "Title: {title}\n\n" prefix added later
+    #     #chunk_overlap=50, # By how many tokens chunks overlap (default: 50)
+    # ),
+    # ModelEval(
+    #     model_name="nomic-ai/nomic-embed-text-v1", # Same as used by ZotSeek
+    #     doc_prefix="search_document: ",
+    #     query_prefix="search_query: ",
+    #     reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+    # ),
+    # ModelEval(
+    #     model_name="intfloat/multilingual-e5-large-instruct", # Good but slow
+    #     query_prefix="Instruct: Given a query, retrieve relevant passages from the document.\nQuery: ",
+    #     reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+    # ),
     ModelEval(
         model_name="Snowflake/snowflake-arctic-embed-l-v2.0", # Good but slow
-        reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
-    ),
-    ModelEval(
-        model_name="BAAI/bge-m3", # Good but slow
-        reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+        # reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+        chunk_size=768,
     ),
     # ModelEval(
-    #     model_name="Qwen/Qwen3-Embedding-0.6B", # Supposed to be good - could not run locally
-    # )
+    #     model_name="BAAI/bge-m3", # Good but slow
+    #     reranker_model_name="cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    # ),
+    ModelEval(
+        model_name="Qwen/Qwen3-Embedding-0.6B", # Supposed to be good - could not run locally
+    )
 ]
 
 def main():
@@ -74,7 +75,7 @@ def main():
     all_results = []
     for idx, model in enumerate(MODELS_TO_TEST):
         model.init(dataset)
-        
+        print("Model testing:", model.model_name)
         metrics = model.run()
         
         # Save results to file
