@@ -103,3 +103,60 @@ class CrossEncoderReranker(Reranker):
         
         # Return top-k
         return indexed_scores[:top_k]
+
+class SagemakerReranker:
+    """Reranker that uses a SageMaker endpoint for reranking."""
+    
+    def __init__(self, endpoint_name: str):
+        """
+        Initialize the SageMaker reranker.
+        
+        Args:
+            endpoint_name: Name of the SageMaker endpoint hosting the reranker model
+        """
+        self.endpoint_name = endpoint_name
+        self.runtime = boto3.client('sagemaker-runtime')
+    
+    def rerank_with_indices(
+        self, 
+        query: str, 
+        passages_with_indices: List[Tuple[int, str]], 
+        top_k: int
+    ) -> List[Tuple[int, float]]:
+        if not passages_with_indices:
+            return []
+        
+        # Extract indices and texts
+        indices = [idx for idx, _ in passages_with_indices]
+        texts = [text for _, text in passages_with_indices]
+        
+        # Call SageMaker endpoint
+        response = self.runtime.invoke_endpoint(
+            EndpointName=self.endpoint_name,
+            ContentType='application/json',
+            Body=json.dumps({
+                "query": query,
+                "texts": texts
+            })
+        )
+        
+        # Parse response
+        result = json.loads(response['Body'].read().decode())
+        
+        # Result is a list of dicts with 'index' (position in input) and 'score'
+        # Already sorted by score descending
+        indexed_scores = []
+        for item in result:
+            # Get the original position in the input array
+            input_position = item.get('index')
+            score = float(item.get('score', 0.0))
+            
+            # Map back to our chunk index using the input position
+            if input_position is not None and input_position < len(indices):
+                chunk_idx = indices[input_position]
+                indexed_scores.append((chunk_idx, score))
+        
+        # Results are already sorted by the endpoint, just take top_k
+        return indexed_scores[:top_k]
+
+

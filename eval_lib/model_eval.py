@@ -1,10 +1,13 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import math
 import gc
-from eval_lib.rerank import CrossEncoderReranker
+import boto3
+import json
+from eval_lib.rerank import SagemakerReranker
 from .chunking import FixedTokensChunker, Chunker, is_relevant_chunk
-from .embed import SentenceTransformerEmbedder, Embedder
+from .embed import SentenceTransformerEmbedder, SagemakerEmbedder
 from config import K_VALUES, LOG_DETAILED_RESULTS
+
 
 class ModelEval:
     """
@@ -13,7 +16,7 @@ class ModelEval:
     def __init__(
         self,
         model_name: str,
-        reranker_model_name: Optional[str] = None,
+        sagemaker_reranker_endpoint: Optional[str] = None,
         chunk_size: int = 512,
         chunk_overlap: int = 50,
         query_prefix: str = "",
@@ -25,7 +28,7 @@ class ModelEval:
         self.chunk_overlap = chunk_overlap
         self.query_prefix = query_prefix
         self.doc_prefix = doc_prefix
-        self.reranker_model_name = reranker_model_name
+        self.sagemaker_reranker_endpoint = sagemaker_reranker_endpoint
         self.reranker_retrieval_k = reranker_retrieval_k or 30
         
         # Will be initialized when init() is called
@@ -59,15 +62,15 @@ class ModelEval:
         
         # Create embedder (loads the model)
         print("  Loading embedding model...")
-        self.embedder = SentenceTransformerEmbedder(
+        self.embedder = SagemakerEmbedder(
             self.model_name,
             query_prefix=self.query_prefix,
             doc_prefix=self.doc_prefix
         )
         print("  Model loaded and ready!")
-        if self.reranker_model_name:
+        if self.sagemaker_reranker_endpoint:
             print("  Loading reranker model...")
-            self.reranker = CrossEncoderReranker(self.reranker_model_name)
+            self.reranker = SagemakerReranker(self.sagemaker_reranker_endpoint)
             print("  Reranker model loaded and ready!")
     
     def uninit(self):
@@ -102,11 +105,11 @@ class ModelEval:
         
         # Count total queries for progress tracking
         total_queries = sum(len(doc['queries']) for doc in self.dataset)
-        query_counter = 0
         
-        for doc in self.dataset:
+        for idx, doc in enumerate(self.dataset):
             doc_id = doc['doc_id']
             chunks = self.chunker.docs[doc_id]['chunks']
+            print(f"Searching {idx+1}/{len(self.dataset)}", end='\r')
             
             for query_data in doc['queries']:
                 query_id = query_data['query_id']
@@ -130,10 +133,6 @@ class ModelEval:
                 
                 # Apply reranking if enabled
                 if self.reranker and search_result.chunks_from_target_doc:
-                    query_counter += 1
-                    # Show progress every 10 queries or for first/last query
-                    if query_counter == 1 or query_counter % 10 == 0 or query_counter == total_queries:
-                        print(f" --- Reranking query {query_counter}/{total_queries}")
                     
                     # Extract passages from target doc for reranking
                     passages_with_indices = [
