@@ -3,9 +3,10 @@ import math
 import gc
 import boto3
 import json
-from eval_lib.rerank import SagemakerReranker
-from .chunking import FixedTokensChunker, Chunker, is_relevant_chunk
+from eval_lib.rerank import SagemakerReranker, CrossEncoderReranker
+from .chunking import FixedTokensChunker, Chunker, BalancedSectionChunker, is_relevant_chunk
 from .embed import SentenceTransformerEmbedder, SagemakerEmbedder
+from .bm25_search import BM25Searcher, reciprocal_rank_fusion, linear_combination
 from config import K_VALUES, LOG_DETAILED_RESULTS
 
 
@@ -59,7 +60,6 @@ class ModelEval:
             model_name=self.model_name  # Pass model name for correct tokenization
         )
         self.chunker.prepare_documents(dataset)
-        
         # Create embedder (loads the model)
         print("  Loading embedding model...")
         self.embedder = SagemakerEmbedder(
@@ -72,6 +72,8 @@ class ModelEval:
             print("  Loading reranker model...")
             self.reranker = SagemakerReranker(self.sagemaker_reranker_endpoint)
             print("  Reranker model loaded and ready!")
+        else:
+            self.reranker = CrossEncoderReranker("cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
     
     def uninit(self):
         del self.embedder
@@ -125,31 +127,35 @@ class ModelEval:
                     max_k = max(K_VALUES)
                     k_to_retrieve = max(max_k, len(relevant_matches))
                 
+                # Embedding search
                 search_result = self.embedder.search(
-                    query_text, 
-                    target_doc_id=doc_id, 
-                    k=k_to_retrieve,
+                    query_text,
+                    target_doc_id=doc_id,
+                    k=k_to_retrieve
                 )
-                
-                # Apply reranking if enabled
-                if self.reranker and search_result.chunks_from_target_doc:
-                    
-                    # Extract passages from target doc for reranking
+
+                # Apply reranking if enabled - rerank ALL retrieved chunks (realistic RAG scenario)
+                if self.reranker and search_result.global_indices:
+
+                    # Extract ALL retrieved passages for reranking, not just target doc
                     passages_with_indices = [
-                        (chunk_idx, chunks[chunk_idx]) 
-                        for chunk_idx, _ in search_result.chunks_from_target_doc
+                        (global_idx, self.chunker.docs[self.embedder.chunk_to_doc_map[global_idx][0]]['chunks'][self.embedder.chunk_to_doc_map[global_idx][1]])
+                        for global_idx in search_result.global_indices
                     ]
-                    
-                    # Rerank and keep top results for evaluation
-                    max_k = max(K_VALUES)
+
+                    # Rerank all retrieved chunks together
                     reranked = self.reranker.rerank_with_indices(
-                        query_text, 
-                        passages_with_indices, 
-                        top_k=max(max_k, len(relevant_matches))
+                        query_text,
+                        passages_with_indices,
+                        top_k=len(passages_with_indices)
                     )
-                    
-                    # Update search_result with reranked chunks
-                    search_result.chunks_from_target_doc = reranked
+
+                    # Filter reranked results to target doc for evaluation
+                    search_result.chunks_from_target_doc = [
+                        (self.embedder.chunk_to_doc_map[global_idx][1], score)
+                        for global_idx, score in reranked
+                        if self.embedder.chunk_to_doc_map[global_idx][0] == doc_id
+                    ]
                 
                 search_results.append({
                     'doc_id': doc_id,
