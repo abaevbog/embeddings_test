@@ -6,7 +6,6 @@ import json
 from eval_lib.rerank import SagemakerReranker, CrossEncoderReranker
 from .chunking import FixedTokensChunker, Chunker, BalancedSectionChunker, is_relevant_chunk
 from .embed import SentenceTransformerEmbedder, SagemakerEmbedder
-from .bm25_search import BM25Searcher, reciprocal_rank_fusion, linear_combination
 from config import K_VALUES, LOG_DETAILED_RESULTS
 
 
