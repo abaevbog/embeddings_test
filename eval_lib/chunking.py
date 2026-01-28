@@ -23,6 +23,8 @@ class Chunker:
             abstract = doc['abstract']
             if abstract:
                 abstract_chunks = self.chunk_text(abstract)
+                # Prepend [Abstract] to each abstract chunk
+                abstract_chunks = [f"[Abstract] {chunk}" for chunk in abstract_chunks]
                 all_chunks.extend(abstract_chunks)
             
             # Add full_text if it exists, chunking each section independently
@@ -33,13 +35,13 @@ class Chunker:
                     # Filter out empty paragraphs
                     non_empty_paras = [para for para in paragraphs if para]
                     if non_empty_paras:
-                        # Prepend section name to the section text
-                        if section_name:
-                            section_text = '\n'.join(f"[{section_name}] {para}" for para in non_empty_paras)
-                        else:
-                            section_text = '\n'.join(non_empty_paras)
+                        # Join paragraphs without section prefix (we'll add it to each chunk)
+                        section_text = '\n'.join(non_empty_paras)
                         # Chunk this section independently
                         section_chunks = self.chunk_text(section_text)
+                        # Prepend section name to EACH chunk from this section
+                        if section_name:
+                            section_chunks = [f"[{section_name}] {chunk}" for chunk in section_chunks]
                         all_chunks.extend(section_chunks)
             
             # Prepend title to each chunk after chunking
