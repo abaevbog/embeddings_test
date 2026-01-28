@@ -10,7 +10,7 @@ import pickle
 import json
 import boto3
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import SEARCH_ALL_CHUNKS
+from config import SEARCH_ALL_CHUNKS, USE_CACHE
 
 runtime = boto3.client('sagemaker-runtime')
 
@@ -89,26 +89,55 @@ class Embedder:
         
         return SearchResult(global_indices, similarity_dict, chunks_from_target, retrieved_doc_ids)
     
+    def _load_embeddings_from_disk(self):
+        """Load embeddings and metadata from disk if cache exists."""
+        cache_dir = "embeddings_cache"
+        safe_model_name = self.model_name.replace("/", "_").replace("\\", "_")
+        cache_file = os.path.join(cache_dir, f"{safe_model_name}.pkl")
+
+        if not (USE_CACHE and os.path.exists(cache_file)):
+            return False
+
+        try:
+            with open(cache_file, 'rb') as f:
+                cache_data = pickle.load(f)
+
+            # Verify the cached data is for the same model
+            if cache_data.get('model_name') != self.model_name:
+                print(f"Cache model mismatch: {cache_data.get('model_name')} != {self.model_name}")
+                return False
+
+            self.embeddings = cache_data['embeddings']
+            self.chunk_to_doc_map = cache_data['chunk_to_doc_map']
+
+            print(f"Loaded cached embeddings from {cache_file}")
+            print(f"Total chunks: {len(self.chunk_to_doc_map)}")
+            return True
+
+        except Exception as e:
+            print(f"Error loading cache: {e}")
+            return False
+
     def _save_embeddings_to_disk(self):
         """Save embeddings and metadata to disk in embeddings_cache folder."""
         # Create embeddings_cache folder if it doesn't exist
         cache_dir = "embeddings_cache"
         os.makedirs(cache_dir, exist_ok=True)
-        
+
         # Create a safe filename from model name
         safe_model_name = self.model_name.replace("/", "_").replace("\\", "_")
         cache_file = os.path.join(cache_dir, f"{safe_model_name}.pkl")
-        
+
         # Save embeddings and metadata
         cache_data = {
             'embeddings': self.embeddings,
             'chunk_to_doc_map': self.chunk_to_doc_map,
             'model_name': self.model_name
         }
-        
+
         with open(cache_file, 'wb') as f:
             pickle.dump(cache_data, f)
-        
+
         print(f"Saved embeddings to {cache_file}")
 
 
@@ -137,45 +166,51 @@ class SentenceTransformerEmbedder(Embedder):
 
         - docs: mapping doc_id -> {'title': str, 'chunks': List[str]}
         """
+        # Try to load cached embeddings first
+        if self._load_embeddings_from_disk():
+            print("Loaded embeddings from cache!")
+            return
+
+        print("Generating new embeddings...")
         chunks_count = 0
         all_embeddings = []
         chunk_to_doc_map = []
-        
+
         total_docs = len(docs)
         doc_counter = 0
-        
+
         # Convert dict to list
         doc_items = list(docs.items())
-        
+
         # Process documents sequentially for local model
         for doc_id, doc_data in doc_items:
             chunks = doc_data.get('chunks', [])
             if not chunks:
                 continue
-            
+
             # Embed this document's chunks (title already included during chunking)
             doc_embeddings = self.embed_with_prefix(chunks, self.doc_prefix)
             doc_counter += 1
-            
+
             if doc_embeddings is not None:
                 all_embeddings.append(doc_embeddings)
-                
+
                 # Track metadata
                 for chunk_idx in range(len(chunks)):
                     chunks_count += 1
                     chunk_to_doc_map.append((doc_id, chunk_idx))
-            
+
             print(f" --- {doc_counter}/{total_docs} docs indexed ({chunks_count} chunks)", end='\r')
-        
+
         if all_embeddings:
             self.embeddings = np.vstack(all_embeddings)
         else:
             self.embeddings = np.zeros((0, 0))
-        
+
         self.chunk_to_doc_map = chunk_to_doc_map
 
         print(f"\nTotal chunks across all documents: {chunks_count}")
-        
+
         # Save embeddings to disk
         self._save_embeddings_to_disk()
 
@@ -223,63 +258,69 @@ class SagemakerEmbedder(Embedder):
 
         - docs: mapping doc_id -> {'title': str, 'chunks': List[str]}
         """
+        # Try to load cached embeddings first
+        if self._load_embeddings_from_disk():
+            print("Loaded embeddings from cache!")
+            return
+
+        print("Generating new embeddings...")
         chunks_count = 0
         all_embeddings = []
         chunk_to_doc_map = []
-        
+
         total_docs = len(docs)
         doc_counter = 0
-        
+
         # Convert dict to list
         doc_items = list(docs.items())
-        
+
         # Process documents in parallel batches for SageMaker
         BATCH_SIZE = 10
-        
+
         for batch_start in range(0, len(doc_items), BATCH_SIZE):
             batch_end = min(batch_start + BATCH_SIZE, len(doc_items))
             batch = doc_items[batch_start:batch_end]
-            
+
             print(f"\n[BATCH] Processing documents {batch_start+1}-{batch_end} of {total_docs}")
-            
+
             def process_document(doc_id, doc_data):
                 """Process a single document's chunks."""
                 chunks = doc_data.get('chunks', [])
                 if not chunks:
                     return doc_id, None, []
-                
+
                 # Embed this document's chunks (title already included during chunking)
                 doc_embeddings = self.embed_with_prefix(chunks, self.doc_prefix)
                 return doc_id, doc_embeddings, chunks
-            
+
             # Process batch in parallel
             with ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
                 futures = [executor.submit(process_document, doc_id, doc_data) for doc_id, doc_data in batch]
-                
+
                 # Collect results in order
                 for future in futures:
                     doc_id, doc_embeddings, chunks = future.result()
                     doc_counter += 1
-                    
+
                     if doc_embeddings is not None:
                         all_embeddings.append(doc_embeddings)
-                        
+
                         # Track metadata
                         for chunk_idx in range(len(chunks)):
                             chunks_count += 1
                             chunk_to_doc_map.append((doc_id, chunk_idx))
-                    
+
                     print(f" --- {doc_counter}/{total_docs} docs indexed ({chunks_count} chunks)", end='\r')
-    
+
         if all_embeddings:
             self.embeddings = np.vstack(all_embeddings)
         else:
             self.embeddings = np.zeros((0, 0))
-        
+
         self.chunk_to_doc_map = chunk_to_doc_map
 
         print(f"\nTotal chunks across all documents: {chunks_count}")
-        
+
         # Save embeddings to disk
         self._save_embeddings_to_disk()
     

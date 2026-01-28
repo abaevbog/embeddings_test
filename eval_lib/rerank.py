@@ -1,7 +1,8 @@
 from typing import List, Dict, Tuple
 from sentence_transformers import CrossEncoder
 import numpy as np
-
+import boto3
+import json
 
 class Reranker:
     """Base class for rerankers that score query-passage pairs."""
